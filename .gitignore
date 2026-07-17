@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+
+# API Key & user config
+config.json
+
+# Large model files (keep .gitkeep)
+models/*
+!models/.gitkeep
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python venv
+.venv/
+venv/
+env/
+
+# Windows batch launchers (user-local)
+*.bat

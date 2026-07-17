@@ -1,0 +1,9 @@
+# UI: Qt 原生渲染, 仅装 Essentials 精简包 (无 WebEngine/Multimedia)
+PySide6-Essentials>=6.6
+# PP-OCR ONNX CPU 推理
+onnxruntime>=1.17
+numpy>=1.24
+# 图像处理 (headless: 不带 GUI/视频依赖, 体积小)
+opencv-python-headless>=4.8
+# DB 检测框 unclip 多边形偏移
+pyclipper>=1.3
