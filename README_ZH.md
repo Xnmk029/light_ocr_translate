@@ -88,12 +88,26 @@ light_ocr_translate/
 1. 按下全局快捷键（默认：`Ctrl+Alt+D`），屏幕会被冻结并变暗。
 2. 拖动鼠标左键选择需要翻译的屏幕区域。
 3. 松开鼠标——选中的图片区域会立即被原地钉住（钉图窗口）。
-4. 后台 OCR 识别与 LLM 翻译完成后，钉图窗口中的原文会被直接无缝替换为译文。
-5. 按下 `Esc` 或在选区界面右键即可退出截图状态。
-6. 对于已钉住的翻译窗口：
-   - 按 `Esc`、右键或双击即可关闭该窗口。
-   - 拖动窗口任意位置可移动它。
-   - 按下 `Ctrl+C` 可快速复制所有翻译出来的文本。
+4. 后台 OCR 识别与 LLM 翻译完成后，钉图窗口中的原文会被直接无缝替换为译文（流式模式下译文逐行浮现）。
+5. 按下 `Esc`、右键任意位置、或点击图外的暗色遮罩即可关闭结果。
+6. 左键拖动译文图可调整位置；`Ctrl+C` 复制译文，`Ctrl+Shift+C` 复制原文。
+
+### 性能模式
+
+| 模式 | 说明 |
+|------|------|
+| standard | 并发 4 路、8 行分块，速度与语境质量均衡 |
+| turbo | 并发 8 路、3 行分块，长文首屏更快，单块语境略降 |
+
+### 内存与休眠
+
+- 关闭 ONNX Runtime 内存池（arena），推理缓冲用完即还系统；识别批次按宽度预算限制峰值内存。
+- 空闲 `sleep_minutes` 分钟（默认 10，设置中可改）后自动休眠：卸载 OCR 引擎，内存回落到纯 UI 基线。
+- 快速唤醒：按下快捷键的瞬间引擎即在后台线程重新加载，与拖拽选区并行完成，唤醒延迟被选区手势完全掩盖，体感零等待。
+
+## 下载（免安装版）
+
+从 [Releases](https://github.com/Xnmk029/light_ocr_translate/releases) 下载 x64 免安装压缩包：解压到任意目录，将三个模型文件放入 exe 旁的 `models/` 文件夹，双击 `LightOcrTranslate.exe` 即可运行，无需安装、无需管理员权限。
 
 ## 打包
 
@@ -111,11 +125,16 @@ pyinstaller -w -n LightOcrTranslate --collect-binaries onnxruntime main.py
 | 字段名 | 默认值 | 说明 |
 |-------|---------|-------------|
 | hotkey | ctrl+alt+d | 全局截图翻译快捷键 |
-| base_url | https://api.deepseek.com/v1 | OpenAI 兼容接口 endpoint |
-| api_key | (空) | 您的 API Key |
-| model | deepseek-chat | 调用的模型名称 |
 | target_lang | 简体中文 | 翻译目标语言 |
+| perf_mode | standard | standard 标准 / turbo 高速 |
+| stream_output | true | SSE 流式输出，译文逐行上屏 |
+| sleep_minutes | 10 | 空闲休眠分钟数（0 = 不休眠） |
+| concurrency | 4 | 标准模式翻译并发数 |
+| chunk_lines | 8 | 标准模式单请求最大行数 |
+| chunk_chars | 600 | 标准模式单请求最大字符数 |
 | erase_mode | solid | solid = 主背景色填充；inpaint = 使用 TELEA 算法进行图像修复 |
+
+多供应商（DeepSeek / 通义千问 / OpenAI / Kimi / 智谱 / SiliconFlow / Ollama 本地）在设置对话框中管理：可切换、新增、删除预设，每个供应商独立保存 Base URL / API Key / 模型名。
 
 ## 开源协议
 

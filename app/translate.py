@@ -1,8 +1,13 @@
-"""LLM 翻译: OpenAI 兼容 /chat/completions, 后台线程 + Qt 信号回主线程。
+"""LLM 翻译: OpenAI 兼容 /chat/completions。
 
-协议: 把 OCR 行打包成 JSON 数组一次性请求 (单次往返, 低延迟低成本),
-要求模型返回等长 JSON 数组, 逐行对应; 解析失败时逐级降级兜底。
-仅用标准库 urllib, 不引入额外 HTTP 依赖; 自动遵循系统 HTTPS_PROXY 环境变量。
+双模式:
+- 流式 (stream=True): SSE 逐 token 推送, ArrayScanner 增量扫描 JSON 数组,
+  每个字符串元素一闭合立即 emit line_done(全局行偏移, 新行), 首行秒级上屏;
+  流式异常自动降级为非流式请求。
+- 高性能模式 (perf_mode=turbo): 小分块 (3 行) + 高并发 (8 路), 长文总延迟
+  约为标准模式的 1/2 ~ 1/3; 标准模式分块大, 上下文更完整。
+
+所有信号从后台线程发出, Qt 自动 queued 回主线程, UI 永不阻塞。
 """
 import json
 import re
@@ -22,48 +27,212 @@ SYSTEM_PROMPT = (
     "4. 译文务必简洁, 长度尽量接近原文, 因为要贴回原文所在的版面位置。"
 )
 
+TURBO_CONCURRENCY = 8
+TURBO_CHUNK_LINES = 3
+TURBO_CHUNK_CHARS = 240
+
+
+class ArrayScanner:
+    """流式 JSON 数组的增量解析器: 每当一个元素闭合立即产出, 无需等整段合法。"""
+
+    def __init__(self):
+        self._buf = ""
+        self._pos = 0
+        self._in_array = False
+        self.emitted = 0          # 已产出的元素个数
+
+    def text(self) -> str:
+        return self._buf
+
+    def feed(self, piece: str) -> list[str]:
+        """喂入新字符流, 返回本次新闭合的元素。"""
+        self._buf += piece
+        out: list[str] = []
+        while True:
+            el = self._next_element()
+            if el is None:
+                break
+            out.append(el)
+        self.emitted += len(out)
+        return out
+
+    def _next_element(self):
+        buf, n = self._buf, len(self._buf)
+        if not self._in_array:
+            i = buf.find("[", self._pos)
+            if i == -1:
+                return None
+            self._pos = i + 1
+            self._in_array = True
+        p = self._pos
+        while p < n and buf[p] in " \t\r\n,":
+            p += 1
+        if p >= n or buf[p] == "]":
+            self._pos = p
+            return None
+        if buf[p] == '"':                       # 字符串元素: 扫描非转义闭合引号
+            j, esc = p + 1, False
+            while j < n:
+                c = buf[j]
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    raw = buf[p:j + 1]
+                    self._pos = j + 1
+                    try:
+                        return json.loads(raw)
+                    except Exception:
+                        return raw[1:-1]
+                j += 1
+            return None                          # 字符串未闭合, 等更多数据
+        j = p                                    # 裸元素 (数字/null 等)
+        while j < n and buf[j] not in ",]":
+            j += 1
+        if j >= n:
+            return None
+        token = buf[p:j].strip()
+        self._pos = j
+        return token or None
+
 
 class Translator(QObject):
-    finished = Signal(list)   # list[str] 与输入行等长
-    failed = Signal(str)
+    line_done = Signal(int, list)        # (全局行偏移, [新增行, ...])
+    finished = Signal(list)              # 全部完成, 失败位置为 None
+    failed = Signal(str)                 # 所有块均失败
 
-    def __init__(self, cfg, parent=None):
+    def __init__(self, provider_info: dict, perf_mode: str = "standard",
+                 timeout: float = 30.0, stream: bool = True, parent=None):
         super().__init__(parent)
-        self._cfg = cfg
+        self._p = provider_info
+        self._timeout = timeout
+        self._turbo = (perf_mode == "turbo")
+        self._stream = stream
+        self._lock = threading.Lock()
 
     def translate_lines(self, lines: list[str]) -> None:
-        threading.Thread(target=self._work, args=(list(lines),), daemon=True).start()
-
-    def _work(self, lines: list[str]) -> None:
-        cfg = self._cfg
-        if not cfg.api_key:
-            self.failed.emit("未配置 API Key (托盘图标 → 设置)")
+        lines = list(lines)
+        if not lines:
+            self.finished.emit([])
             return
+        base_url = (self._p.get("base_url") or "").strip()
+        if not base_url:
+            self.failed.emit("未配置 Base URL (托盘 → 设置)")
+            return
+        local = "127.0.0.1" in base_url or "localhost" in base_url
+        if not self._p.get("api_key") and not local:
+            self.failed.emit("未配置 API Key (托盘 → 设置)")
+            return
+        chunks = self._split(lines)
+        self._outs: list = [None] * len(lines)
+        self._errors: list[str] = []
+        self._total_chunks = len(chunks)
+        self._remaining = len(chunks)
+        conc = TURBO_CONCURRENCY if self._turbo else \
+            max(1, int(self._p.get("concurrency", 4)))
+        sem = threading.Semaphore(conc)
+        for start, chunk in chunks:
+            threading.Thread(target=self._chunk_work,
+                             args=(start, chunk, sem), daemon=True).start()
+
+    def _split(self, lines: list[str]) -> list[tuple[int, list[str]]]:
+        max_lines = TURBO_CHUNK_LINES if self._turbo else \
+            max(1, int(self._p.get("chunk_lines", 8)))
+        max_chars = TURBO_CHUNK_CHARS if self._turbo else \
+            max(50, int(self._p.get("chunk_chars", 600)))
+        chunks, start, buf, chars = [], 0, [], 0
+        for i, ln in enumerate(lines):
+            if buf and (len(buf) >= max_lines or chars + len(ln) > max_chars):
+                chunks.append((start, buf))
+                start, buf, chars = i, [], 0
+            buf.append(ln)
+            chars += len(ln)
+        if buf:
+            chunks.append((start, buf))
+        return chunks
+
+    def _chunk_work(self, start: int, chunk: list[str], sem) -> None:
+        arr, err = None, None
+        with sem:
+            try:
+                arr = self._request(chunk, start)
+            except urllib.error.HTTPError as e:
+                err = f"HTTP {e.code}: {e.read().decode('utf-8', 'ignore')[:200]}"
+            except Exception as e:
+                err = str(e)
+        with self._lock:
+            self._remaining -= 1
+            last = self._remaining == 0
+            if arr is not None:
+                arr = arr[:len(chunk)]
+                self._outs[start:start + len(arr)] = arr
+            elif err:
+                self._errors.append(err)
+            if last:
+                if len(self._errors) >= self._total_chunks:
+                    self.failed.emit(self._errors[0] if self._errors else "未知错误")
+                else:
+                    self.finished.emit(list(self._outs))
+
+    # ---------------- 请求 ----------------
+    def _request(self, chunk: list[str], start: int) -> list[str]:
+        if self._stream:
+            try:
+                return self._do_stream(chunk, start)
+            except Exception:
+                pass                                 # 流式失败 -> 非流式兜底
+        return self._do_nonstream(chunk)
+
+    def _build_request(self, chunk: list[str], stream: bool) -> urllib.request.Request:
         payload = {
-            "model": cfg.model,
+            "model": self._p.get("model", ""),
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT.format(lang=cfg.target_lang)},
-                {"role": "user", "content": json.dumps(lines, ensure_ascii=False)},
+                {"role": "system",
+                 "content": SYSTEM_PROMPT.format(
+                     lang=self._p.get("target_lang", "简体中文"))},
+                {"role": "user", "content": json.dumps(chunk, ensure_ascii=False)},
             ],
             "temperature": 0.1,
-            "stream": False,
+            "stream": stream,
         }
-        req = urllib.request.Request(
-            cfg.base_url.rstrip("/") + "/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {cfg.api_key}"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
-            self.finished.emit(_parse_array(content, lines))
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", "ignore")[:200]
-            self.failed.emit(f"HTTP {e.code}: {body}")
-        except Exception as e:
-            self.failed.emit(str(e))
+        headers = {"Content-Type": "application/json"}
+        if self._p.get("api_key"):
+            headers["Authorization"] = f"Bearer {self._p['api_key']}"
+        return urllib.request.Request(
+            self._p["base_url"].rstrip("/") + "/chat/completions",
+            data=json.dumps(payload).encode("utf-8"), headers=headers)
+
+    def _do_stream(self, chunk: list[str], start: int) -> list[str]:
+        req = self._build_request(chunk, stream=True)
+        scanner = ArrayScanner()
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", "ignore").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    choices = json.loads(data).get("choices") or []
+                    delta = (choices[0].get("delta") or {}) if choices else {}
+                    content = delta.get("content") or ""
+                except Exception:
+                    continue
+                if not content:
+                    continue
+                prev = scanner.emitted                 # 已产出行数 = 块内偏移
+                new = scanner.feed(content)
+                if new:
+                    self.line_done.emit(start + prev, [str(x) for x in new])
+        return _parse_array(scanner.text(), chunk)
+
+    def _do_nonstream(self, chunk: list[str]) -> list[str]:
+        req = self._build_request(chunk, stream=False)
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return _parse_array(data["choices"][0]["message"]["content"], chunk)
 
 
 def _parse_array(content: str, fallback: list[str]) -> list[str]:

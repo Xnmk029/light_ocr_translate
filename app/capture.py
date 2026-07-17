@@ -14,9 +14,10 @@ from PySide6.QtWidgets import QWidget
 
 @dataclass
 class CaptureResult:
-    image: QImage   # 选区图像 (物理像素, BGR888)
-    rect: QRect     # 选区全局逻辑坐标 (用于原地放置结果窗)
-    dpr: float      # devicePixelRatio
+    image: QImage       # 选区图像 (物理像素, BGR888)
+    rect: QRect         # 选区全局逻辑坐标
+    dpr: float          # devicePixelRatio
+    screen: object = None  # QScreen, 用于 ResultWindow 定位遮罩
 
 
 class _ScreenOverlay(QWidget):
@@ -73,6 +74,8 @@ class _ScreenOverlay(QWidget):
 
     # ---------------- 绘制 ----------------
     def paintEvent(self, _e):
+        if self._frozen is None:
+            return
         p = QPainter(self)
         p.drawPixmap(0, 0, self._frozen)
         p.fillRect(self.rect(), QColor(0, 0, 0, 110))
@@ -148,11 +151,12 @@ class CaptureManager(QObject):
         img = overlay._frozen.copy(px).toImage().convertToFormat(QImage.Format_BGR888)
         global_rect = QRect(overlay.geometry().topLeft() + sel.topLeft(), sel.size())
         self._close_all()
-        self.captured.emit(CaptureResult(img, global_rect, dpr))
+        self.captured.emit(CaptureResult(img, global_rect, dpr, overlay.screen()))
         self.finished.emit(True)
 
     def _close_all(self) -> None:
         for ov in self._overlays:
             ov.close()
+            ov._frozen = None      # 立即断开整屏冻结帧引用 (多屏 4K 达数十 MB)
             ov.deleteLater()
         self._overlays = []

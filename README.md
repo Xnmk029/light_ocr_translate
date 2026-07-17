@@ -88,12 +88,32 @@ Only 5 third-party packages (no Electron, no CEF, no full DL framework):
 1. Press the global hotkey (default: `Ctrl+Alt+D`). The screen freezes.
 2. Drag to select the region to translate.
 3. Release -- the selected image appears pinned in-place instantly.
-4. After OCR + translation completes, the text is replaced in-place on the same image.
-5. Press `Esc` or right-click to exit selection mode.
-6. On a result pin:
-   - Press `Esc`, right-click, or double-click to close.
-   - Drag to move.
-   - Press `Ctrl+C` to copy all translated text.
+4. After OCR + translation completes, all text is replaced in-place on the same image (new translations appear line-by-line as they arrive via streaming).
+5. Press `Esc`, right-click anywhere (on the image or the dimmed mask), or click on the dark mask outside the image to close.
+6. Left-click drag on the image to reposition; `Ctrl+C` to copy all translated text.
+
+### Performance Modes
+
+| Mode | Description |
+|------|-------------|
+| standard | Moderate concurrency (4), larger chunk (8 lines), balanced speed/quality |
+| turbo | High concurrency (8), small chunk (3 lines), fast first-paint for long text, lower per-chunk context quality |
+
+Turbo mode + streaming achieves near-instant first-line display for long text.
+
+### Memory
+
+- ONNX Runtime memory arena is disabled (`enable_cpu_mem_arena = False`), so inference buffers are returned to the OS after each run instead of growing a permanent pool.
+- Recognition batches are width-budgeted to bound peak activation memory.
+- Capture frames, OCR intermediates, and result bitmaps are released as soon as their window closes; an idle-time working-set trim returns freed pages to the OS.
+
+### Idle Sleep and Fast Wake
+
+After `sleep_minutes` of inactivity (default 10, configurable in Settings) the ONNX sessions are unloaded and memory drops to the bare UI baseline. Pressing the hotkey wakes the app instantly: the engine reloads in a background thread while you are still dragging the selection, so the wake-up latency is fully hidden by the selection gesture.
+
+## Download (Portable)
+
+Grab the portable x64 build from [Releases](https://github.com/Xnmk029/light_ocr_translate/releases): unzip anywhere, put the three model files into `models/` next to the exe, and run `LightOcrTranslate.exe`. No installation, no admin rights required.
 
 ## Packaging
 
@@ -106,16 +126,21 @@ Copy the `models/` directory (with ONNX files and charset.txt) to the same direc
 
 ## Configuration
 
-`config.json` is auto-created next to the executable. Key fields accessible via tray -> Settings:
+`config.json` is auto-created next to the executable. Key fields accessible via Settings:
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | hotkey | ctrl+alt+d | Global capture hotkey |
-| base_url | https://api.deepseek.com/v1 | OpenAI-compatible API endpoint |
-| api_key | (empty) | API key |
-| model | deepseek-chat | Model name |
 | target_lang | 简体中文 | Translation target language |
-| erase_mode | solid | solid = fill with dominant background color; inpaint = TELEA inpainting |
+| perf_mode | standard | standard or turbo |
+| stream_output | true | Whether to use SSE streaming for progressive rendering |
+| sleep_minutes | 10 | Idle minutes before unloading the OCR engine (0 = never sleep) |
+| concurrency | 4 | Concurrent translation requests |
+| chunk_lines | 8 | Max lines per chunk in standard mode |
+| chunk_chars | 600 | Max characters per chunk in standard mode |
+| erase_mode | solid | solid = fill with dominant background; inpaint = TELEA inpainting |
+
+Providers are managed entirely in the Settings dialog (add / remove / switch presets, configure Base URL / API Key / Model per provider). Built-in presets include DeepSeek, Qwen, OpenAI, Kimi, GLM, SiliconFlow, Ollama.
 
 ## License
 

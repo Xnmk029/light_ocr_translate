@@ -23,5 +23,5 @@ models/*
 venv/
 env/
 
-# Windows batch launchers (user-local)
-*.bat
+# stray scratch files
+v4pro_think

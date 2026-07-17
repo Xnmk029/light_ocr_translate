@@ -17,14 +17,31 @@ class OcrLine:
 
 
 def get_rotate_crop_image(img: np.ndarray, points: np.ndarray) -> np.ndarray:
-    """四边形透视矫正为水平矩形; 竖排 (h/w>=1.5) 旋转 90° 供识别。"""
+    """四边形裁剪文本区域; 竖排 (h/w>=1.5) 旋转 90° 供识别。
+
+    快速路径: 屏幕截图中绝大多数 Box 是轴对齐矩形, 直接 numpy 切片,
+    免去逐行透视变换的插值开销 (长文数十行时收益明显)。
+    """
     pts = points.astype(np.float32)
+    axis_aligned = (abs(pts[0, 1] - pts[1, 1]) < 1.5 and abs(pts[2, 1] - pts[3, 1]) < 1.5
+                    and abs(pts[0, 0] - pts[3, 0]) < 1.5 and abs(pts[1, 0] - pts[2, 0]) < 1.5)
+    if axis_aligned:
+        ih, iw = img.shape[:2]
+        x0 = max(0, int(min(pts[0, 0], pts[3, 0])))
+        y0 = max(0, int(min(pts[0, 1], pts[1, 1])))
+        x1 = min(iw, int(np.ceil(max(pts[1, 0], pts[2, 0]))))
+        y1 = min(ih, int(np.ceil(max(pts[2, 1], pts[3, 1]))))
+        if x1 - x0 >= 2 and y1 - y0 >= 2:
+            crop = np.ascontiguousarray(img[y0:y1, x0:x1])
+            if crop.shape[0] / crop.shape[1] >= 1.5:
+                crop = np.ascontiguousarray(np.rot90(crop))
+            return crop
     w = max(1, int(max(np.linalg.norm(pts[0] - pts[1]), np.linalg.norm(pts[2] - pts[3]))))
     h = max(1, int(max(np.linalg.norm(pts[0] - pts[3]), np.linalg.norm(pts[1] - pts[2]))))
     dst = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
     m = cv2.getPerspectiveTransform(pts, dst)
     crop = cv2.warpPerspective(img, m, (w, h),
-                               borderMode=cv2.BORDER_REPLICATE, flags=cv2.INTER_CUBIC)
+                               borderMode=cv2.BORDER_REPLICATE, flags=cv2.INTER_LINEAR)
     if h / w >= 1.5:
         crop = np.ascontiguousarray(np.rot90(crop))
     return crop

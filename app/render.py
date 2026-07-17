@@ -49,13 +49,20 @@ def _wrap(text: str, fm: QFontMetricsF, max_w: float):
     return lines or [""]
 
 
+def _make_font(family: str, px: int) -> QFont:
+    """Medium 字重 + 全休整提示: 小字号下笔画更实, 提升可读性。"""
+    font = QFont(family)
+    font.setPixelSize(px)
+    font.setWeight(QFont.Weight.Medium)
+    return font
+
+
 def _fit(text: str, family: str, box_w: float, box_h: float):
     """二分查找最大字号, 使折行后的文本块 (行数*行高, 最宽行) 塞进 Box。"""
     lo, hi, best = 7, max(8, int(box_h)), None
     while lo <= hi:
         mid = (lo + hi) // 2
-        font = QFont(family)
-        font.setPixelSize(mid)
+        font = _make_font(family, mid)
         fm = QFontMetricsF(font)
         lines = _wrap(text, fm, box_w)
         if lines is not None and len(lines) * fm.height() <= box_h + 1:
@@ -64,8 +71,7 @@ def _fit(text: str, family: str, box_w: float, box_h: float):
         else:
             hi = mid - 1
     if best is None:                                # 极小 Box: 用最小字号硬排
-        font = QFont(family)
-        font.setPixelSize(7)
+        font = _make_font(family, 7)
         best = (font, _wrap(text, QFontMetricsF(font), box_w) or [text])
     return best
 

@@ -57,17 +57,39 @@ def _border_dominant_color(img: np.ndarray, rect, pad: int = 3) -> tuple:
     return tuple(int(v) for v in sel.mean(0))
 
 
+def _push_contrast(fg, bg, min_gap: float = 110.0) -> tuple:
+    """沿亮度方向把前景色推离背景色, 保证最小亮度差 => 任何背景下文字清晰。
+
+    保留原文字色相 (与黑/白线性混合), 只在亮度余量不足时反转方向。
+    """
+    fl, bl = _lum(fg), _lum(bg)
+    prefer_dark = fl <= bl
+    if prefer_dark and bl < min_gap and (255 - bl) > bl:
+        prefer_dark = False                          # 背景太暗, 压不出深色差 -> 转亮字
+    elif not prefer_dark and (255 - bl) < min_gap and bl > (255 - bl):
+        prefer_dark = True                           # 背景太亮 -> 转深字
+    if prefer_dark:
+        target = max(0.0, bl - min_gap)
+        if fl <= target:
+            return tuple(int(v) for v in fg)
+        k = target / fl if fl > 0 else 0.0           # 与纯黑混合, 亮度线性缩放
+        return tuple(int(round(v * k)) for v in fg)
+    target = min(255.0, bl + min_gap)
+    if fl >= target:
+        return tuple(int(v) for v in fg)
+    a = (target - fl) / (255.0 - fl) if fl < 255 else 0.0
+    return tuple(int(round(v + (255 - v) * a)) for v in fg)
+
+
 def _text_color(img: np.ndarray, rect, bg: tuple, min_px: int = 12) -> tuple:
     x, y, w, h = rect
     roi = img[y:y + h, x:x + w].reshape(-1, 3).astype(np.int32)
     dist = np.abs(roi - np.array(bg, np.int32)).sum(1)
     ink = roi[dist > 100]                                    # 远离背景色 => 墨水像素
     if len(ink) < min_px:
-        return (20, 20, 20) if _lum(bg) > 127 else (240, 240, 240)
-    c = ink.mean(0)
-    if abs(_lum(c) - _lum(bg)) < 60:                         # 对比度兜底: 黑或白
-        return (20, 20, 20) if _lum(bg) > 127 else (240, 240, 240)
-    return tuple(int(v) for v in c)
+        return (15, 15, 15) if _lum(bg) > 127 else (250, 250, 250)
+    c = tuple(float(v) for v in ink.mean(0))
+    return _push_contrast(c, bg)                             # 强制拉开对比度
 
 
 def _expand(box: np.ndarray, margin: float = 2.0) -> np.ndarray:
@@ -87,6 +109,22 @@ class StyledLine:
     text: str
     bg: tuple                # BGR 主背景色
     fg: tuple                # BGR 译文颜色
+
+
+def restore_regions(erased: np.ndarray, original: np.ndarray,
+                    styled_pending: list["StyledLine"], margin: float = 4.0) -> np.ndarray:
+    """把未完成翻译的行从原图拷回擦除图 (增量上屏时未译行保持原文可读)。"""
+    out = erased.copy()
+    if not styled_pending:
+        return out
+    ih, iw = out.shape[:2]
+    for s in styled_pending:
+        x, y, w, h = cv2.boundingRect(_expand(s.box, margin).astype(np.int32))
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(iw, x + w), min(ih, y + h)
+        if x1 > x0 and y1 > y0:
+            out[y0:y1, x0:x1] = original[y0:y1, x0:x1]
+    return out
 
 
 def analyze_and_erase(img: np.ndarray, lines: list[OcrLine],

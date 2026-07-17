@@ -27,6 +27,7 @@ class DBDetector:
         so = ort.SessionOptions()
         so.log_severity_level = 3
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        so.enable_cpu_mem_arena = False   # 不用内存池: 大输入的激活内存用完即还
         self.sess = ort.InferenceSession(model_path, sess_options=so,
                                          providers=["CPUExecutionProvider"])
         self.input_name = self.sess.get_inputs()[0].name
