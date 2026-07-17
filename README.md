@@ -87,10 +87,12 @@ Only 5 third-party packages (no Electron, no CEF, no full DL framework):
 
 1. Press the global hotkey (default: `Ctrl+Alt+D`). The screen freezes.
 2. Drag to select the region to translate.
-3. Release -- the selected image appears pinned in-place instantly.
-4. After OCR + translation completes, all text is replaced in-place on the same image (new translations appear line-by-line as they arrive via streaming).
-5. Press `Esc`, right-click anywhere (on the image or the dimmed mask), or click on the dark mask outside the image to close.
-6. Left-click drag on the image to reposition; `Ctrl+C` to copy all translated text.
+3. Release -- the selected image appears pinned in-place instantly on a translucent mask.
+4. After OCR + translation completes, all text is replaced in-place (streaming renders line-by-line).
+5. **View modes**: click toolbar or press `1` (translated), `2` (original), `3` (side-by-side comparison).
+6. **Pin**: press `P` or click "钉住" to detach as a floating always-on-top window (survives subsequent captures).
+7. **Save**: press `S` or click "保存" to save original + translated images to disk.
+8. Close: `Esc`, right-click anywhere, or click the dark mask outside the image.
 
 ### Performance Modes
 
@@ -113,7 +115,9 @@ After `sleep_minutes` of inactivity (default 10, configurable in Settings) the O
 
 ## Download (Portable)
 
-Grab the portable x64 build from [Releases](https://github.com/Xnmk029/light_ocr_translate/releases): unzip anywhere, put the three model files into `models/` next to the exe, and run `LightOcrTranslate.exe`. No installation, no admin rights required.
+Grab the portable x64 build from [Releases](https://github.com/Xnmk029/light_ocr_translate/releases): unzip anywhere and run `LightOcrTranslate.exe`. No installation, no admin rights required.
+
+Since v0.3.0 the PP-OCR ONNX models ship inside the zip (Apache License 2.0, redistributable), so it works out of the box.
 
 ## Packaging
 

@@ -18,12 +18,12 @@ from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QDialog, QSystemTrayIcon
 
-from app import imgproc, render
+from app import imgproc, layout, render
 from app.capture import CaptureManager, CaptureResult
 from app.config import Config
 from app.hotkey import GlobalHotkey
 from app.ocr.pipeline import OcrEngine
-from app.result_window import ResultWindow
+from app.result_window import PinnedWindow, ResultWindow
 from app.translate import Translator
 from app.tray import SettingsDialog, Tray
 
@@ -39,6 +39,7 @@ class AppController(QObject):
         self._app = app
         self.cfg = Config.load()
         self.pins: list[ResultWindow] = []
+        self.pinned: list[PinnedWindow] = []      # 用户钉住的悬浮窗 (跨截图存活)
         self.capture: CaptureManager | None = None
 
         self.executor = ThreadPoolExecutor(max_workers=2)
@@ -144,6 +145,8 @@ class AppController(QObject):
         self._arm_sleep()
         for p in list(self.pins):
             p.close()
+        for w in self.pinned:          # 钉住窗只隐藏, 避免被截入, 截图后恢复
+            w.hide()
         self._app.processEvents()
         QThread.msleep(30)
         self.capture = CaptureManager(self)
@@ -155,12 +158,15 @@ class AppController(QObject):
         if self.capture is not None:
             self.capture.deleteLater()
             self.capture = None
+        for w in self.pinned:
+            w.show()
         self._arm_sleep()
 
     # ---------------- OCR ----------------
     def on_captured(self, res: CaptureResult) -> None:
         pin = ResultWindow(res.image, res.rect, res.dpr, res.screen)
         pin.closed.connect(self._forget_pin)
+        pin.pin_requested.connect(self._on_pin_requested)
         self.pins.append(pin)
         pin.show()
         pin.raise_()
@@ -182,7 +188,8 @@ class AppController(QObject):
             if not lines:
                 worker.done.emit({"styled": [], "erased": None, "original": None})
                 return
-            erased, styled = imgproc.analyze_and_erase(bgr, lines, self.cfg.erase_mode)
+            blocks = layout.group_blocks(lines)      # 行 -> 段落 (提升排版与译文连贯)
+            erased, styled = imgproc.analyze_and_erase(bgr, blocks, self.cfg.erase_mode)
             worker.done.emit({"styled": styled, "erased": erased, "original": bgr})
         except Exception as e:
             worker.error.emit(str(e))
@@ -266,6 +273,19 @@ class AppController(QObject):
                                                self.cfg.font_family))
 
     # ---------------- 杂项 ----------------
+    def _on_pin_requested(self, data: dict) -> None:
+        w = PinnedWindow(data["orig"], data["trans"], data["mode"], data["pos"],
+                         data["dpr"], data["texts"], data["source_texts"])
+        w.closed.connect(self._forget_pinned)
+        self.pinned.append(w)
+        w.show()
+        w.raise_()
+
+    def _forget_pinned(self, w) -> None:
+        if w in self.pinned:
+            self.pinned.remove(w)
+        QTimer.singleShot(1500, self._maybe_trim)
+
     def _safe(self, pin: ResultWindow, fn) -> None:
         if pin in self.pins:
             fn()
@@ -310,6 +330,8 @@ class AppController(QObject):
     def _quit(self) -> None:
         for p in list(self.pins):
             p.close()
+        for w in list(self.pinned):
+            w.close()
         self._app.quit()
 
 
