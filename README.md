@@ -1,5 +1,7 @@
 # Light OCR Translate
 
+[简体中文](README_ZH.md) | English
+
 Screen region OCR + in-place overlay translation tool for Windows. Select any area on screen with a global hotkey, and the recognized text will be replaced directly on the image by its translation -- no popup windows, no context switching.
 
 ## Architecture
@@ -17,6 +19,8 @@ File layout:
 light_ocr_translate/
   main.py                  -- entry, threading orchestration
   requirements.txt
+  启动.bat                 -- Windows batch launcher (with console output)
+  无控制台启动.bat         -- Windows batch launcher (silent, no console window)
   app/
     config.py              -- JSON config (auto-created)
     hotkey.py              -- Win32 global hotkey
@@ -48,9 +52,9 @@ Only 5 third-party packages (no Electron, no CEF, no full DL framework):
 
 1. Install dependencies:
 
-```
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 2. Place PP-OCR ONNX models in `models/`:
 
@@ -60,20 +64,24 @@ pip install -r requirements.txt
    | `rec.onnx` | PP-OCR v4/v5/v6 mobile recognition model, exported via paddle2onnx |
    | `charset.txt` | Character dictionary matching the recognition model (e.g. ppocrv5_dict.txt) |
 
+   *Note: If you have `rapidocr-onnxruntime` installed in your Python environment, you can copy the ONNX files directly from its package directory to `models/` and extract the character list metadata as `charset.txt`.*
+
    Example conversion (run once on any machine, PaddlePaddle not required at runtime):
 
-   ```
+   ```bash
    paddle2onnx --model_dir ch_PP-OCRv6_mobile_det_infer --model_filename inference.pdmodel --params_filename inference.pdiparams --save_file models/det.onnx --opset_version 14
    paddle2onnx --model_dir ch_PP-OCRv6_mobile_rec_infer --model_filename inference.pdmodel --params_filename inference.pdiparams --save_file models/rec.onnx --opset_version 14
    ```
 
 3. Launch:
 
-```
-python main.py
-```
+   * **Console Launch**: Double-click **`启动.bat`**, or run:
+     ```bash
+     python main.py
+     ```
+   * **Silent Launch**: Double-click **`无控制台启动.bat`**.
 
-The app resides in the system tray. Configure API endpoint in tray -> Settings before first use.
+   The app resides in the system tray. Configure API endpoint in tray -> Settings before first use.
 
 ## Usage
 
@@ -82,11 +90,14 @@ The app resides in the system tray. Configure API endpoint in tray -> Settings b
 3. Release -- the selected image appears pinned in-place instantly.
 4. After OCR + translation completes, the text is replaced in-place on the same image.
 5. Press `Esc` or right-click to exit selection mode.
-6. On a result pin: `Esc`/right-click/double-click to close, drag to move, `Ctrl+C` to copy all translated text.
+6. On a result pin:
+   - Press `Esc`, right-click, or double-click to close.
+   - Drag to move.
+   - Press `Ctrl+C` to copy all translated text.
 
 ## Packaging
 
-```
+```bash
 pip install pyinstaller
 pyinstaller -w -n LightOcrTranslate --collect-binaries onnxruntime main.py
 ```
